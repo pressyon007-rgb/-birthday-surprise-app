@@ -1,3 +1,4 @@
+import hmac
 import os
 import json
 import html
@@ -37,7 +38,8 @@ def get_secret_or_env(name, default=""):
         value = default
     return os.environ.get(name, value) or default
 
-APP_PASSWORD = str(get_secret_or_env("MONALISA_APP_PASSWORD", "Monalisa"))
+APP_PASSWORD = str(get_secret_or_env("MONALISA_APP_PASSWORD", "")).strip()
+OWNER_PASSWORD = str(get_secret_or_env("MONALISA_OWNER_PASSWORD", "")).strip()
 PUBLIC_URL_DEFAULT = str(get_secret_or_env("MONALISA_PUBLIC_URL", "")).strip()
 
 DEFAULTS = {
@@ -92,7 +94,7 @@ load_settings()
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = value
-for key, value in {"logged_in": False, "page": "login", "quiz_index": 0, "quiz_answers": [], "gallery_index": 0, "quiz_done": False, "automatic_slide": 0, "scrapbook_index": 0, "memories_seen": False}.items():
+for key, value in {"logged_in": False, "page": "login", "quiz_index": 0, "quiz_answers": [], "gallery_index": 0, "quiz_done": False, "automatic_slide": 0, "scrapbook_index": 0, "memories_seen": False, "owner_authenticated": False}.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -296,6 +298,34 @@ def apply_custom_background():
             st.markdown(f'<style>[data-testid="stAppViewContainer"]{{background-image:linear-gradient(rgba(2,15,11,{overlay}),rgba(2,15,11,{overlay})),url("{url}");background-size:cover;background-position:center;background-attachment:fixed;}}</style>', unsafe_allow_html=True)
 
 
+def owner_settings_gate():
+    """Require a separate owner password before exposing customization controls."""
+    with st.sidebar:
+        st.markdown("## 🔐 Owner access")
+        if st.session_state.get("owner_authenticated", False):
+            st.success("Owner access enabled")
+            if st.button("🔒 Lock owner settings", key="lock_owner_settings", use_container_width=True):
+                st.session_state.owner_authenticated = False
+                st.rerun()
+            return True
+
+        with st.form("owner_settings_login"):
+            owner_password = st.text_input("Owner password", type="password", key="owner_password_input")
+            submitted = st.form_submit_button("Unlock owner settings", use_container_width=True)
+
+        if submitted:
+            if OWNER_PASSWORD and hmac.compare_digest(owner_password, OWNER_PASSWORD):
+                st.session_state.owner_authenticated = True
+                st.session_state.page = "studio"
+                st.rerun()
+            elif not OWNER_PASSWORD:
+                st.error("Owner password is not configured. Add MONALISA_OWNER_PASSWORD in Streamlit Cloud Secrets.")
+            else:
+                st.error("Incorrect owner password.")
+
+    return bool(st.session_state.get("owner_authenticated", False))
+
+
 def sidebar_customizer():
     with st.sidebar:
         st.markdown("## 🎨 Customize Everything")
@@ -390,8 +420,9 @@ def nav_bar():
         pages.append(("📸 Memories", "photos"))
     if st.session_state.get("memories_seen", False):
         pages.append(("💌 Letter", "letter"))
-    # Keep the editor available while the owner is preparing the app.
-    pages.append(("🖼️ Photo Studio", "studio"))
+    # Photo Studio is visible only in the authenticated owner's session.
+    if st.session_state.get("owner_authenticated", False):
+        pages.append(("🖼️ Photo Studio", "studio"))
     cols = st.columns(len(pages))
     for col, (label, page_name) in zip(cols, pages):
         with col:
@@ -493,7 +524,7 @@ def show_login():
             password = st.text_input("Enter the password", type="password")
             submitted = st.form_submit_button("Open memories 💚", use_container_width=True)
             if submitted:
-                if password == APP_PASSWORD:
+                if APP_PASSWORD and hmac.compare_digest(password, APP_PASSWORD):
                     st.session_state.logged_in = True
                     st.session_state.page = "quiz"
                     st.session_state.quiz_index = 0
@@ -501,6 +532,8 @@ def show_login():
                     st.session_state.quiz_done = False
                     st.session_state.memories_seen = False
                     st.rerun()
+                elif not APP_PASSWORD:
+                    st.error("The app password is not configured. Please configure MONALISA_APP_PASSWORD in Streamlit Cloud Secrets.")
                 else:
                     st.error("That password doesn't match. Try again.")
 
@@ -772,32 +805,36 @@ def show_countdown():
     for col, value, label in zip(cols, [days, hours, minutes, seconds], ["Days", "Hours", "Minutes", "Seconds"]):
         with col: st.markdown(f'<div class="memory-card"><div style="font-size:clamp(1.5rem,4vw,3rem);color:#b18b2f;font-weight:700">{value}</div><div>{label}</div></div>', unsafe_allow_html=True)
     st.caption("The real unlock is 3 November 2026 at 12:00 AM IST.")
-    if st.button("🖼️ Open Photo Studio to customize photos", use_container_width=True):
-        st.session_state.page = "studio"; st.rerun()
 
 
 def main():
-    apply_global_css(); apply_custom_background(); sidebar_customizer()
+    apply_global_css()
+    apply_custom_background()
+    owner_mode = owner_settings_gate()
+    if owner_mode:
+        sidebar_customizer()
+
     # Keep one shared music player in the same place across the app's pages.
     play_music()
     now = datetime.now(IST)
     locked = now < BIRTHDAY_OPENS_AT and not TEST_MODE
     if TEST_MODE:
         st.warning("LOCAL PREVIEW MODE IS ON. You can test the pages before the birthday. The real date lock remains 3 November 2026 at 12:00 AM IST.")
-    if locked and st.session_state.page not in {"login", "studio"}:
-        show_countdown(); return
-    if locked and st.session_state.page == "login":
+    # Before the birthday, only the authenticated owner can enter the app/editor.
+    if locked and not owner_mode:
         show_countdown()
-        if st.button("Open login preview (test mode required)", use_container_width=True):
-            st.info("Set MONALISA_TEST_MODE=1 in the same PowerShell terminal to test all pages.")
         return
+    # Never allow a recipient to open the owner-only photo editor by typing/selecting its page.
+    if st.session_state.page == "studio" and not owner_mode:
+        st.session_state.page = "quiz" if st.session_state.get("logged_in", False) else "login"
+        st.rerun()
     # Enforce the intended recipient flow even if a page is selected directly.
     if st.session_state.page == "photos" and not st.session_state.get("quiz_done", False):
         st.session_state.page = "quiz"
     if st.session_state.page == "letter" and not st.session_state.get("memories_seen", False):
         st.session_state.page = "photos" if st.session_state.get("quiz_done", False) else "quiz"
 
-    if not st.session_state.logged_in and st.session_state.page not in {"login", "studio"}:
+    if not st.session_state.logged_in and st.session_state.page != "login" and not owner_mode:
         st.session_state.page = "login"
     if st.session_state.page == "login":
         show_login(); return
@@ -817,7 +854,10 @@ def main():
     if st.session_state.logged_in:
         with st.sidebar:
             if st.button("🔒 Lock app / return to login", use_container_width=True):
-                st.session_state.logged_in = False; st.session_state.page = "login"; st.rerun()
+                st.session_state.logged_in = False
+                st.session_state.owner_authenticated = False
+                st.session_state.page = "login"
+                st.rerun()
 
 
 if __name__ == "__main__":
