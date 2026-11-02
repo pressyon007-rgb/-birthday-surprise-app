@@ -625,6 +625,48 @@ button.primary{{background:linear-gradient(110deg,#16815f,#b99435)}} button:acti
     except OSError as error:
         st.error(f"Unable to load the song: {error}")
 
+def show_login():
+    """Secure login screen for the birthday app."""
+    st.markdown(
+        """
+        <div class="hero">
+            <h1>💚 Welcome to Our Memory World</h1>
+            <p>A little place filled with love, laughter and beautiful memories.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 🔐 Enter your password to continue")
+
+    with st.form("recipient_login_form"):
+        password = st.text_input(
+            "App password",
+            type="password",
+            placeholder="Enter your password",
+            key="recipient_login_password",
+        )
+        submitted = st.form_submit_button(
+            "Unlock Memories 💚",
+            use_container_width=True,
+        )
+
+    if submitted:
+        if not APP_PASSWORD:
+            st.error(
+                "App password is not configured. "
+                "Please add MONALISA_APP_PASSWORD in Streamlit Cloud Secrets."
+            )
+        elif hmac.compare_digest(password, APP_PASSWORD):
+            st.session_state.logged_in = True
+            st.session_state.page = "quiz"
+            st.session_state.quiz_index = 0
+            st.session_state.quiz_answers = []
+            st.session_state.quiz_done = False
+            st.rerun()
+        else:
+            st.error("Incorrect password. Please try again.")
+
 def show_quiz():
     """Render the owner-editable quiz saved in the app settings."""
     questions = st.session_state.get("quiz_questions", [])
