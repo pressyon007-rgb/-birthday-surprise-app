@@ -48,9 +48,6 @@ def get_secret_or_env(name, default=""):
 APP_PASSWORD = str(get_secret_or_env("MONALISA_APP_PASSWORD", "")).strip()
 OWNER_PASSWORD = str(get_secret_or_env("MONALISA_OWNER_PASSWORD", "")).strip()
 PUBLIC_URL_DEFAULT = str(get_secret_or_env("MONALISA_PUBLIC_URL", "")).strip()
-
-st.write("APP PASSWORD LOADED:", bool(APP_PASSWORD))
-st.write("OWNER PASSWORD LOADED:", bool(OWNER_PASSWORD))
 DEFAULTS = {
     "photo_display_mode": "Photo gallery", "slideshow_seconds": 4,
     "theme": "Emerald & Gold", "page_bg": "#08291f", "accent": "#d8b653", "text_color": "#fff3d2",
@@ -60,6 +57,13 @@ DEFAULTS = {
     "letter_text": "Dear Monalisa,\n\nSome memories become the most beautiful parts of our lives. Thank you for your laughter, your kindness, and all the little moments that mean more than words can explain. I hope this year brings you peace, courage, beautiful surprises, and all the happiness you deserve.\n\nNo matter how busy life becomes, you will always have a special place in my heart.\n\nWith lots of love 💚",
     "music_title": "Monalisa's Birthday Song", "music_volume": 70,
     "music_autoplay": True, "music_loop": True, "music_show_player": True,
+    "quiz_enabled": True, "quiz_title": "A Little Memory Quiz ✨",
+    "quiz_subtitle": "Answer these just for fun",
+    "quiz_questions": [
+        {"question": "What makes a memory special?", "options": ["The people in it", "The price of things", "The place only"], "answer": 0},
+        {"question": "Choose the best gift for someone you love.", "options": ["A kind memory", "An empty box", "A forgotten note"], "answer": 0},
+        {"question": "What should a birthday year bring?", "options": ["Joy and growth", "Only busy days", "No new memories"], "answer": 0},
+    ],
     "frame_color": "#f7f0d8", "frame_style": "Classic", "frame_thickness": 8, "frame_gap": 10,
     "gallery_columns": 4, "gallery_photo_height": 210, "show_captions": True,
     "caption_font_size": 17, "caption_color": "#f5d889", "caption_emphasis": "Italic",
@@ -124,6 +128,8 @@ for key, value in DEFAULTS.items():
 st.session_state["celebration_intensity"] = normalize_celebration_intensity(
     st.session_state.get("celebration_intensity", 5)
 )
+if not isinstance(st.session_state.get("quiz_questions"), list):
+    st.session_state["quiz_questions"] = DEFAULTS.get("quiz_questions", [])
 for key, value in {"logged_in": False, "page": "login", "quiz_index": 0, "quiz_answers": [], "gallery_index": 0, "quiz_done": False, "automatic_slide": 0, "scrapbook_index": 0, "memories_seen": False, "owner_authenticated": False}.items():
     if key not in st.session_state:
         st.session_state[key] = value
@@ -408,6 +414,76 @@ def sidebar_customizer():
                 st.session_state.custom_music = ""
                 save_settings()
                 st.rerun()
+        with st.expander("❔ Quiz Control Studio", expanded=False):
+            st.caption("Edit the quiz shown after login. Changes are saved in monalisa_settings.json.")
+            st.toggle("Enable the memory quiz", key="quiz_enabled")
+            st.text_input("Quiz title", key="quiz_title")
+            st.text_input("Quiz subtitle", key="quiz_subtitle")
+            questions = st.session_state.get("quiz_questions", [])
+            if not isinstance(questions, list):
+                questions = []
+                st.session_state.quiz_questions = questions
+            if questions:
+                labels = [f"Question {i + 1}: {str(q.get('question', ''))[:45]}" for i, q in enumerate(questions)]
+                selected_q = st.selectbox("Choose a question to edit", range(len(questions)), format_func=lambda i: labels[i], key="quiz_editor_selected")
+                current_q = questions[selected_q]
+                st.markdown(f"**Editing question {selected_q + 1} of {len(questions)}**")
+                edit_text = st.text_input("Question text", value=str(current_q.get("question", "")), key=f"quiz_q_text_{selected_q}")
+                old_options = list(current_q.get("options", ["Option A", "Option B", "Option C"]))
+                while len(old_options) < 3:
+                    old_options.append(f"Option {chr(65 + len(old_options))}")
+                edit_a = st.text_input("Answer choice A", value=str(old_options[0]), key=f"quiz_q_a_{selected_q}")
+                edit_b = st.text_input("Answer choice B", value=str(old_options[1]), key=f"quiz_q_b_{selected_q}")
+                edit_c = st.text_input("Answer choice C", value=str(old_options[2]), key=f"quiz_q_c_{selected_q}")
+                answer_labels = ["A", "B", "C"]
+                old_answer = max(0, min(2, int(current_q.get("answer", 0))))
+                correct_choice = st.selectbox("Correct answer", answer_labels, index=old_answer, key=f"quiz_q_correct_{selected_q}")
+                col_save, col_delete = st.columns(2)
+                with col_save:
+                    if st.button("💾 Save question", key=f"quiz_save_q_{selected_q}", use_container_width=True):
+                        updated = [dict(q) for q in questions]
+                        updated[selected_q] = {"question": edit_text.strip(), "options": [edit_a.strip(), edit_b.strip(), edit_c.strip()], "answer": answer_labels.index(correct_choice)}
+                        if not edit_text.strip() or any(not x.strip() for x in [edit_a, edit_b, edit_c]):
+                            st.error("Please fill in the question and all three choices.")
+                        else:
+                            st.session_state.quiz_questions = updated
+                            save_settings()
+                            st.success("Question saved.")
+                            st.rerun()
+                with col_delete:
+                    if st.button("🗑️ Delete question", key=f"quiz_delete_q_{selected_q}", use_container_width=True):
+                        if len(questions) <= 1:
+                            st.error("Keep at least one question in the quiz, or disable the quiz.")
+                        else:
+                            st.session_state.quiz_questions = [q for i, q in enumerate(questions) if i != selected_q]
+                            st.session_state.quiz_index = 0
+                            st.session_state.quiz_done = False
+                            save_settings()
+                            st.success("Question deleted.")
+                            st.rerun()
+            else:
+                st.info("No quiz questions yet. Add your first question below.")
+            if st.button("➕ Add a new question", key="quiz_add_question", use_container_width=True):
+                updated = list(st.session_state.get("quiz_questions", []))
+                updated.append({"question": "Write your new question here", "options": ["Choice A", "Choice B", "Choice C"], "answer": 0})
+                st.session_state.quiz_questions = updated
+                st.session_state.quiz_index = 0
+                st.session_state.quiz_done = False
+                save_settings()
+                st.rerun()
+            if st.button("↩️ Restore default quiz", key="quiz_restore_defaults", use_container_width=True):
+                st.session_state.quiz_questions = [
+                    {"question": "What makes a memory special?", "options": ["The people in it", "The price of things", "The place only"], "answer": 0},
+                    {"question": "Choose the best gift for someone you love.", "options": ["A kind memory", "An empty box", "A forgotten note"], "answer": 0},
+                    {"question": "What should a birthday year bring?", "options": ["Joy and growth", "Only busy days", "No new memories"], "answer": 0},
+                ]
+                st.session_state.quiz_title = "A Little Memory Quiz ✨"
+                st.session_state.quiz_subtitle = "Answer these just for fun"
+                st.session_state.quiz_enabled = True
+                st.session_state.quiz_index = 0
+                st.session_state.quiz_done = False
+                save_settings()
+                st.rerun()
         with st.expander("🎉 Grand Birthday Animations", expanded=True):
             st.caption("Choose the celebration effect shown when the app opens and when you move between pages.")
             st.selectbox("Celebration effect", [
@@ -549,52 +625,20 @@ button.primary{{background:linear-gradient(110deg,#16815f,#b99435)}} button:acti
     except OSError as error:
         st.error(f"Unable to load the song: {error}")
 
-QUIZ = [("What makes a memory special?", ["The people in it", "The price of things", "The place only"], 0), ("Choose the best gift for someone you love.", ["A kind memory", "An empty box", "A forgotten note"], 0), ("What should a birthday year bring?", ["Joy and growth", "Only busy days", "No new memories"], 0)]
-def show_login():
-    _, center, _ = st.columns([1, 1.15, 1])
-    with center:
-        hero("A Little World of Memories 💚", "A collection of moments made with love")
-        st.markdown('<div class="memory-card"><h2>Welcome</h2><p>Enter the password to open your memories.</p></div>', unsafe_allow_html=True)
-        photos = list_photos()
-        if photos:
-            cols = st.columns(min(4, len(photos[:4])))
-            for col, path in zip(cols, photos[:4]):
-                with col:
-                    st.image(path, use_container_width=True)
-        with st.form("login_form"):
-            password = st.text_input("Enter the password", type="password")
-            submitted = st.form_submit_button("Open memories 💚", use_container_width=True)
-            if submitted:
-                if APP_PASSWORD and hmac.compare_digest(password, APP_PASSWORD):
-                    st.session_state.logged_in = True
-                    st.session_state.page = "quiz"
-                    st.session_state.quiz_index = 0
-                    st.session_state.quiz_answers = []
-                    st.session_state.quiz_done = False
-                    st.session_state.memories_seen = False
-                    st.rerun()
-                elif not APP_PASSWORD:
-                    st.error("The app password is not configured. Please configure MONALISA_APP_PASSWORD in Streamlit Cloud Secrets.")
-                else:
-                    st.error("That password doesn't match. Try again.")
-def show_home():
-    hero("Happy Birthday Monalisa ✨", "A lifetime of memories, a heart full of love")
-    photos = list_photos()
-    left, right = st.columns([1.2, 1])
-    with left:
-        st.markdown('<div class="memory-card"><h2>Made of memories ✦</h2><p>Every photograph holds a moment, every moment holds a story.</p></div>', unsafe_allow_html=True)
-        if photos:
-            st.image(photos[0], use_container_width=True)
-    with right:
-        st.markdown('<div class="memory-card"><h2>For you, Monalisa 💚</h2><p>May the days ahead bring you laughter, warmth, courage and beautiful surprises.</p></div>', unsafe_allow_html=True)
-        if st.button("✨ Open the memory gallery", use_container_width=True):
-            st.session_state.page = "photos"; st.rerun()
-        if st.button("💌 Read the letter", use_container_width=True):
-            st.session_state.page = "letter"; st.rerun()
-        if st.button("🎁 Birthday reveal", use_container_width=True):
-            st.session_state.page = "reveal"; st.rerun()
 def show_quiz():
-    hero("A Little Memory Quiz ✨", "Answer these just for fun")
+    """Render the owner-editable quiz saved in the app settings."""
+    questions = st.session_state.get("quiz_questions", [])
+    if not st.session_state.get("quiz_enabled", True):
+        st.info("The memory quiz is currently disabled. Continue to the photo memories below.")
+        if st.button("Continue to our memories →", key="quiz_disabled_continue", use_container_width=True):
+            st.session_state.quiz_done = True
+            st.session_state.page = "photos"
+            st.rerun()
+        return
+    if not questions:
+        st.warning("No quiz questions have been added. Ask the owner to add questions in Quiz Control Studio.")
+        return
+    hero(st.session_state.get("quiz_title", "A Little Memory Quiz ✨"), st.session_state.get("quiz_subtitle", "Answer these just for fun"))
     if st.session_state.quiz_done:
         st.success("Quiz complete! Every memory is more special when shared. 💚")
         left, right = st.columns(2)
@@ -609,18 +653,29 @@ def show_quiz():
                 st.session_state.page = "photos"
                 st.rerun()
         return
-    idx = st.session_state.quiz_index
-    question, choices, answer = QUIZ[idx]
-    st.progress((idx + 1) / len(QUIZ))
-    st.subheader(f"Question {idx + 1} of {len(QUIZ)}")
-    choice = st.radio(question, choices, key=f"quiz_choice_{idx}")
-    if st.button("Submit answer", use_container_width=True):
+    idx = max(0, min(int(st.session_state.quiz_index), len(questions) - 1))
+    item = questions[idx]
+    question = str(item.get("question", "Question"))
+    choices = [str(x) for x in item.get("options", [])]
+    if len(choices) < 2:
+        st.error("This question needs at least two answer choices. Please edit it in Quiz Control Studio.")
+        return
+    answer = max(0, min(len(choices) - 1, int(item.get("answer", 0))))
+    st.progress((idx + 1) / len(questions))
+    st.subheader(f"Question {idx + 1} of {len(questions)}")
+    choice = st.radio(question, choices, key=f"quiz_choice_{idx}_{len(questions)}")
+    if st.button("Submit answer", use_container_width=True, key=f"quiz_submit_{idx}"):
         st.session_state.quiz_answers.append(choice)
-        if choice == choices[answer]: st.success("Correct! 💚")
-        else: st.info(f"Best answer: {choices[answer]}")
-        if idx + 1 >= len(QUIZ): st.session_state.quiz_done = True
-        else: st.session_state.quiz_index += 1
+        if choice == choices[answer]:
+            st.success("Correct! 💚")
+        else:
+            st.info(f"Best answer: {choices[answer]}")
+        if idx + 1 >= len(questions):
+            st.session_state.quiz_done = True
+        else:
+            st.session_state.quiz_index += 1
         st.rerun()
+
 def show_photo_card(path, custom_height=None):
     cfg = get_photo_config(path)
     image = make_frame_image(path, cfg)
