@@ -28,14 +28,29 @@ IST = timezone(timedelta(hours=5, minutes=30))
 BIRTHDAY_OPENS_AT = datetime(2026, 11, 3, 0, 0, 0, tzinfo=IST)
 TEST_MODE = os.environ.get("MONALISA_TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 def get_secret_or_env(name, default=""):
+    """Read a non-empty environment variable first, then Streamlit Secrets."""
+    env_value = os.environ.get(name, "").strip()
+    if env_value:
+        return env_value
+
     try:
-        value = st.secrets.get(name, default)
+        secret_value = st.secrets[name]
+        if secret_value is not None and str(secret_value).strip():
+            return str(secret_value).strip()
+    except (KeyError, FileNotFoundError):
+        pass
     except Exception:
-        value = default
-    return os.environ.get(name, value) or default
+        # Keep the app running so the login screen can show a useful
+        # configuration message instead of crashing during startup.
+        pass
+
+    return default
 APP_PASSWORD = str(get_secret_or_env("MONALISA_APP_PASSWORD", "")).strip()
 OWNER_PASSWORD = str(get_secret_or_env("MONALISA_OWNER_PASSWORD", "")).strip()
 PUBLIC_URL_DEFAULT = str(get_secret_or_env("MONALISA_PUBLIC_URL", "")).strip()
+
+st.write("APP PASSWORD LOADED:", bool(APP_PASSWORD))
+st.write("OWNER PASSWORD LOADED:", bool(OWNER_PASSWORD))
 DEFAULTS = {
     "photo_display_mode": "Photo gallery", "slideshow_seconds": 4,
     "theme": "Emerald & Gold", "page_bg": "#08291f", "accent": "#d8b653", "text_color": "#fff3d2",
@@ -44,6 +59,7 @@ DEFAULTS = {
     "letter_title": "A Letter From My Heart 💚",
     "letter_text": "Dear Monalisa,\n\nSome memories become the most beautiful parts of our lives. Thank you for your laughter, your kindness, and all the little moments that mean more than words can explain. I hope this year brings you peace, courage, beautiful surprises, and all the happiness you deserve.\n\nNo matter how busy life becomes, you will always have a special place in my heart.\n\nWith lots of love 💚",
     "music_title": "Monalisa's Birthday Song", "music_volume": 70,
+    "music_autoplay": True, "music_loop": True, "music_show_player": True,
     "frame_color": "#f7f0d8", "frame_style": "Classic", "frame_thickness": 8, "frame_gap": 10,
     "gallery_columns": 4, "gallery_photo_height": 210, "show_captions": True,
     "caption_font_size": 17, "caption_color": "#f5d889", "caption_emphasis": "Italic",
@@ -338,18 +354,60 @@ def sidebar_customizer():
             st.slider("Caption text size", 11, 28, key="caption_font_size")
             st.color_picker("Caption text colour", key="caption_color")
             st.selectbox("Caption emphasis", ["Normal", "Italic", "Bold"], key="caption_emphasis")
-        with st.expander("🎵 Music", expanded=False):
-            st.caption("Autoplay + looping are enabled. Some browsers block sound until you tap Start music once.")
+        with st.expander("🎵 Music Control Studio", expanded=False):
+            st.caption("Manage the birthday soundtrack and playback controls.")
             st.text_input("Song title", key="music_title")
-            st.slider("Music volume", 0, 100, key="music_volume")
-            uploaded_song = st.file_uploader("Upload music file", type=["mp3", "wav", "ogg", "m4a"], key="song_upload")
-            if uploaded_song is not None and st.button("Save uploaded music", key="save_song"):
+            st.slider("Music volume (%)", 0, 100, key="music_volume")
+            st.toggle("Autoplay when the app loads", key="music_autoplay")
+            st.toggle("Loop the song", key="music_loop")
+            st.toggle("Show music dashboard", key="music_show_player")
+
+            available_tracks = list_files(AUDIO_DIR, (".mp3", ".wav", ".ogg", ".m4a"))
+            selected_track = st.session_state.get("custom_music", "")
+            track_options = [""] + available_tracks
+            selected_index = track_options.index(selected_track) if selected_track in track_options else 0
+            selected_track = st.selectbox(
+                "Choose saved song",
+                track_options,
+                index=selected_index,
+                format_func=lambda p: "Use default song" if not p else os.path.basename(p),
+                key="music_track_selector",
+            )
+            if selected_track != st.session_state.get("custom_music", ""):
+                st.session_state.custom_music = selected_track
+                save_settings()
+
+            uploaded_song = st.file_uploader(
+                "Upload or replace birthday song",
+                type=["mp3", "wav", "ogg", "m4a"],
+                key="song_upload",
+            )
+            if uploaded_song is not None and st.button("⬆️ Save uploaded song", key="save_song", use_container_width=True):
                 saved = save_uploaded_file(uploaded_song, AUDIO_DIR, "custom_birthday_song_")
                 if saved:
                     st.session_state.custom_music = saved
                     save_settings()
-                    st.success("Music saved in assets/audio.")
+                    st.success(f"Song saved: {os.path.basename(saved)}")
                     st.rerun()
+
+            current_song = st.session_state.get("custom_music", "")
+            if current_song and os.path.isfile(current_song):
+                st.caption(f"Selected: {os.path.basename(current_song)}")
+                if st.button("🗑️ Remove selected uploaded song", key="remove_song", use_container_width=True):
+                    try:
+                        if os.path.commonpath([os.path.abspath(current_song), os.path.abspath(AUDIO_DIR)]) == os.path.abspath(AUDIO_DIR):
+                            if os.path.basename(current_song).startswith("custom_birthday_song_"):
+                                os.remove(current_song)
+                        st.session_state.custom_music = ""
+                        save_settings()
+                        st.success("Custom song removed. The app will use the default song if available.")
+                        st.rerun()
+                    except OSError as error:
+                        st.error(f"Could not remove the selected song: {error}")
+            if st.button("↩️ Use default birthday song", key="reset_song", use_container_width=True):
+                st.session_state.custom_music = ""
+                save_settings()
+                st.rerun()
         with st.expander("🎉 Grand Birthday Animations", expanded=True):
             st.caption("Choose the celebration effect shown when the app opens and when you move between pages.")
             st.selectbox("Celebration effect", [
@@ -416,11 +474,9 @@ def nav_bar():
                 st.session_state.page = page_name
                 st.rerun()
 def play_music():
-    """Render a looping audio player and attempt autoplay.
-    Audible autoplay can be blocked by browser policy. The player and its
-    Start Music button are placed before the script so the button exists when
-    JavaScript runs. Works whether app.py is in the project root or dashboard/.
-    """
+    """Render the full music dashboard with browser-side playback controls."""
+    if not st.session_state.get("music_show_player", True):
+        return
     path = st.session_state.get("custom_music", "")
     if not path or not os.path.isfile(path):
         candidates = [
@@ -430,8 +486,9 @@ def play_music():
         ]
         candidates.extend(list_files(AUDIO_DIR, (".mp3", ".wav", ".ogg", ".m4a")))
         path = next((candidate for candidate in candidates if os.path.isfile(candidate)), "")
+    st.markdown("### 🎵 Birthday Music Dashboard")
     if not path:
-        st.info("🎵 Add your song at assets/audio/tamil-birthday-song.mp3, or upload it in the sidebar under Music.")
+        st.info("No song is selected yet. Unlock Owner access and upload a song in Music Control Studio.")
         return
     try:
         with open(path, "rb") as audio_file:
@@ -444,47 +501,54 @@ def play_music():
         mime = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4"}.get(ext, "audio/mpeg")
         volume = max(0, min(100, int(st.session_state.get("music_volume", 70)))) / 100
         title = html.escape(str(st.session_state.get("music_title", "Birthday song")))
+        autoplay = "true" if st.session_state.get("music_autoplay", True) else "false"
+        loop = "true" if st.session_state.get("music_loop", True) else "false"
+        filename = html.escape(os.path.basename(path))
         audio_html = f'''<!doctype html>
-<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body style="margin:0;background:transparent;font-family:Arial,sans-serif;color:#f5d889">
-  <audio id="monalisaBirthdayMusic" controls loop preload="auto" playsinline style="width:100%;height:42px">
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{{box-sizing:border-box}} body{{margin:0;background:transparent;font-family:Arial,sans-serif;color:#fff3d2}}
+.panel{{border:1px solid #d8b653;border-radius:16px;padding:14px;background:linear-gradient(125deg,#073526,#10251d);box-shadow:0 5px 18px #0004}}
+.heading{{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:9px}}
+.name{{font-weight:700;color:#f5d889;font-size:16px}} .file{{font-size:11px;opacity:.8}}
+audio{{width:100%;height:42px;margin:5px 0}}
+.controls{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}}
+button{{border:1px solid #d8b653;border-radius:22px;padding:9px 15px;background:#0b4635;color:#fff3d2;font-weight:600;cursor:pointer}}
+button.primary{{background:linear-gradient(110deg,#16815f,#b99435)}} button:active{{transform:scale(.98)}}
+.status{{font-size:12px;color:#f5d889;flex:1;min-width:140px}}
+.volume{{display:flex;gap:8px;align-items:center;font-size:12px}} input{{accent-color:#d8b653;width:110px}}
+</style></head><body>
+<div class="panel">
+  <div class="heading"><span class="name">♫ {title}</span><span class="file">{filename}</span></div>
+  <audio id="player" controls preload="metadata" playsinline>
     <source src="data:{mime};base64,{encoded}" type="{mime}">
     Your browser does not support audio playback.
   </audio>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:5px 0">
-    <button id="startMusic" type="button" style="border:1px solid #d8b653;border-radius:20px;padding:8px 16px;background:#0b4635;color:#fff3d2;font-weight:600;cursor:pointer">▶ Start music</button>
-    <span id="autoplayNotice" style="font-size:12px">Trying to start: {title}</span>
+  <div class="controls">
+    <button class="primary" id="play">▶ Play</button><button id="pause">Ⅱ Pause</button><button id="restart">↺ Restart</button>
+    <label class="volume">Volume <input id="volume" type="range" min="0" max="100" value="{int(volume*100)}"><span id="volLabel">{int(volume*100)}%</span></label>
+    <span class="status" id="status">Ready — press Play if autoplay is blocked.</span>
   </div>
-  <script>
-    window.addEventListener('DOMContentLoaded', function() {{
-      const player = document.getElementById('monalisaBirthdayMusic');
-      const button = document.getElementById('startMusic');
-      const notice = document.getElementById('autoplayNotice');
-      if (!player || !button || !notice) return;
-      player.volume = {volume};
-      player.loop = true;
-      const attemptPlay = function() {{
-        const promise = player.play();
-        if (promise && promise.then) promise.then(function() {{
-          notice.textContent = '♪ Playing: {title}';
-        }}).catch(function() {{
-          notice.textContent = 'Autoplay blocked by browser — tap Start music.';
-        }});
-      }};
-      button.addEventListener('click', function() {{
-        player.play().then(function() {{ notice.textContent = '♪ Music is playing'; }}).catch(function() {{
-          notice.textContent = 'Could not start. Press Play on the audio player.';
-        }});
-      }});
-      player.addEventListener('error', function() {{ notice.textContent = 'Audio file could not be decoded. Try another MP3/WAV file.'; }});
-      player.addEventListener('canplay', function() {{ notice.textContent = 'Ready: {title}'; }}, {{once:true}});
-      attemptPlay();
-    }});
-  </script>
-</body></html>'''
-        components.html(audio_html, height=92, scrolling=False)
+</div>
+<script>
+(function(){{
+ const player=document.getElementById('player'), status=document.getElementById('status');
+ const volume=document.getElementById('volume'), label=document.getElementById('volLabel');
+ player.volume={volume}; player.loop={loop};
+ function report(){{status.textContent=player.paused?'Paused':'♪ Playing';}}
+ document.getElementById('play').addEventListener('click',()=>player.play().then(report).catch(()=>status.textContent='Playback blocked — use the audio player Play control.'));
+ document.getElementById('pause').addEventListener('click',()=>{{player.pause();report();}});
+ document.getElementById('restart').addEventListener('click',()=>{{player.currentTime=0;player.play().then(report).catch(()=>status.textContent='Restarted — press Play to listen.');}});
+ volume.addEventListener('input',()=>{{player.volume=Number(volume.value)/100;label.textContent=volume.value+'%';}});
+ player.addEventListener('play',report); player.addEventListener('pause',report);
+ player.addEventListener('error',()=>status.textContent='Audio could not be decoded. Try another MP3/WAV file.');
+ if({autoplay}){{player.play().then(report).catch(()=>status.textContent='Autoplay blocked by browser — tap Play.');}}
+}})();
+</script></body></html>'''
+        components.html(audio_html, height=190, scrolling=False)
     except OSError as error:
         st.error(f"Unable to load the song: {error}")
+
 QUIZ = [("What makes a memory special?", ["The people in it", "The price of things", "The place only"], 0), ("Choose the best gift for someone you love.", ["A kind memory", "An empty box", "A forgotten note"], 0), ("What should a birthday year bring?", ["Joy and growth", "Only busy days", "No new memories"], 0)]
 def show_login():
     _, center, _ = st.columns([1, 1.15, 1])
